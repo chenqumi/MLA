@@ -1,0 +1,2 @@
+# ignore jupyter-notebook's checkpoint file
+*-checkpoint.ipynb

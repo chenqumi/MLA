@@ -69,22 +69,6 @@ def k_means(df, k):
     return df
 
 
-
-def core_object(df, epsilon=0.11, min_pts=5):
-    cb_idx = set()
-    for idx in df.index:
-        df_dist = mk_dist(df.loc[idx], df, ax=1)
-        pts = (df_dist <= 0.11).sum()
-        if pts >= min_pts:
-            cb_idx.add(idx)
-    return cb_idx
-
-
-def neighborhood(df, i, epsilon=0.11, min_pts=5):
-    df_dist = mk_dist(df.iloc[i], df, ax=1)
-    return df[df_dist <= 0.11].index
-
-
 class Queue(object):
     def __init__(self, lst):
         """
@@ -111,32 +95,70 @@ class Queue(object):
         return len(self.items)
 
 
+def core_object(df, epsilon=0.11, min_pts=5):
+    """
+    find core object s.t. epsilon, min_pts
+    return:
+        core_object's index in df
+    """
+    core = set()
+    for idx in df.index:
+        df_dist = mk_dist(df.loc[idx], df, ax=1)
+        pts = (df_dist <= epsilon).sum()
+        if pts >= min_pts:
+            core.add(idx)
+    return core
+
+
+def neighborhood(df, i, epsilon=0.11, min_pts=5):
+    """
+    find core_object's directly density-reachable, here is called neighbor
+    return:
+        neighbor's index
+    """
+    df_dist = mk_dist(df.loc[i], df, ax=1)
+    return df[df_dist <= epsilon].index
+
+
 def dbscan(df, epsilon=0.11, min_pts=5):
-    Ck = {}
-    cb_idx = core_object(df)
+    """
+    DBSCAN algorithm
+    return:
+        cluster_dict = {
+            k1: {idx1, idx2},
+            k2: {idx3, idx4}
+        }
+    """
+    max_round = 1000
+    cluster_dict = {}
+    core = core_object(df)
 
     k = 0
     no_visits = set(df.index)
 
-    while len(cb_idx) != 0:
+    while (len(core) != 0) and max_round > 0:
         no_visits_old = no_visits
-        cb = cb_idx.pop()
-        queue = Queue([cb,])
-        no_visits.dicard(cb)
+        c_obj = random.choice(tuple(core))
+        queue = Queue([c_obj,])
+        # no_visits.discard(c_obj)
         while (not queue.is_empty()):
             q = queue.de_queue()
             neighbor = neighborhood(df, q)
             if len(neighbor) >= min_pts:
-                delta = set(neighbor).intersection(no_visits)
-                no_visits.difference(delta)
-        k = k + 1
+                s = set(neighbor)
+                delta = s.intersection(no_visits)
+                for d in delta:
+                    queue.en_queue(d)
+                no_visits = no_visits.difference(delta)
+        k += 1
         cluster = no_visits_old.difference(no_visits)
-        Ck[k] = cluster
-        cb_idx.difference(cluster)
-    return Ck
+        cluster_dict[k] = cluster
+        core = core.difference(cluster)
+        max_round -= 1
+    return cluster_dict
 
 
-
+# watermelon 4.0 Data Set
 watermelon4 = pd.DataFrame({
     "density":[
          0.697, 0.774, 0.634, 0.608, 0.556, 0.403, 0.481, 0.437, 0.666, 0.243,
@@ -152,6 +174,11 @@ watermelon4 = pd.DataFrame({
 
 watermelon4.index = watermelon4.index+1
 
+# k-means and plot
 df_kmeans = k_means(watermelon4.copy(), 3)
 sns.scatterplot(x="density", y="sugar_content", hue="cluster", data=df_kmeans)
 plt.show()
+
+# DBSCAN
+cluster_dict = dbscan(watermelon4, epsilon=0.11, min_pts=5)
+

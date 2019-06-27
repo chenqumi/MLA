@@ -1,3 +1,4 @@
+import random
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -13,9 +14,16 @@ def mk_dist(v1, v2, p=2, ax=0):
 
 def k_means(df, k):
     """
+    TODO!!!:
+    df["cluster"] = label_lst
+    will change ORIGINAL DataFrame, so need df.copy() as param
+
     k-means clustering
     df:  pd.DataFrame
     k:   number of clusters
+
+    return:
+        cluster labels
     """
     # initial vector mu in ML book
     # df_vector_mu = pd.DataFrame({
@@ -27,13 +35,14 @@ def k_means(df, k):
     df_vector_mu = df.sample(k)
     df_vector_mu.index = range(k)
     # set cluster label for each sample
-    cluster_labels = []
+    label_lst = []
+    # TODO !!! optimized by df.apply()
     for idx in range(len(df)):
         xi = df.iloc[idx]
         df_dist = mk_dist(xi, df_vector_mu, ax=1)
         label = df_dist.idxmin()
-        cluster_labels.append(label)
-    df["cluster"] = cluster_labels
+        label_lst.append(label)
+    df["cluster"] = label_lst
     
     # update vector mu
     all_updated = True
@@ -58,15 +67,16 @@ def k_means(df, k):
         
         # update cluster label
         if all_updated:        
-            cluster_labels = []
+            label_lst = []
             for idx in range(len(df)):
                 xi = df.iloc[idx, :-1]
                 df_dist = mk_dist(xi, df_vector_mu, ax=1)
                 label = df_dist.idxmin()
-                cluster_labels.append(label)
-            df["cluster"] = cluster_labels
+                label_lst.append(label)
+            # df["cluster"] = label_lst
+    cluster_labels = pd.Series(label_lst, index=df.index)
             
-    return df
+    return cluster_labels
 
 
 class Queue(object):
@@ -124,10 +134,7 @@ def dbscan(df, epsilon=0.11, min_pts=5):
     """
     DBSCAN algorithm
     return:
-        cluster_dict = {
-            k1: {idx1, idx2},
-            k2: {idx3, idx4}
-        }
+        cluster labels, 0 means NO group
     """
     max_round = 1000
     cluster_dict = {}
@@ -152,10 +159,115 @@ def dbscan(df, epsilon=0.11, min_pts=5):
                 no_visits = no_visits.difference(delta)
         k += 1
         cluster = no_visits_old.difference(no_visits)
-        cluster_dict[k] = cluster
+        for c in cluster:
+            cluster_dict[c] = k
         core = core.difference(cluster)
         max_round -= 1
+    
+    cluster_labels = pd.Series(
+        [cluster_dict.get(idx, 0) for idx in df.index], index=df.index
+    )
+        
+    return cluster_labels
+
+
+def haus_dist(c1, c2, method="mean"):
+    """
+    TODO!!!: mask diagonal if c1 and c2 are the same matrix
+    method: one of ["mean", "max", "min"]
+    """
+    # check type of cluster1 and cluster2
+    dist_matrix = pd.DataFrame()
+    c1_type = type(c1)
+    c2_type = type(c2)
+    # according type of c1,c2, calculate dist_mat
+    # if isinstance(c1, pd.DataFrame) and isinstance(c2, pd.DataFrame):
+    if (c1_type is pd.DataFrame) and (c2_type is pd.DataFrame):
+        dist_matrix = c1.apply(lambda x: mk_dist(x, c2, ax=1), axis=1)
+    elif (c1_type is pd.Series) and (c2_type is pd.Series):
+        dist_matrix = mk_dist(c1, c2, ax=1)
+    else:
+        dist_matrix = mk_dist(c1, c2, ax=0)
+    
+    # according type of c1,c2 and method of haus_dist, calculate distance
+    distance = 0.0
+    dist_mat_type = type(dist_matrix)
+    if dist_mat_type is float:
+        return dist_matrix
+    
+    if method == "mean":
+        distance = (dist_matrix.mean().mean() 
+                if dist_mat_type is pd.DataFrame else dist_matrix.mean())
+    elif method == "max":
+        distance = (dist_matrix.max().max() 
+                if dist_mat_type is pd.DataFrame else dist_matrix.max())
+    elif method == "min":
+        distance = (dist_matrix.min().min() 
+                if dist_mat_type is pd.DataFrame else dist_matrix.min())
+    else:
+        print("method wrong ! [mean|max|min]")
+    
+    return distance
+
+
+def update_cluster_dict(cluster_labels):
+    cluster_dict = {}
+    labels = cluster_labels.values
+    indexes = cluster_labels.index
+    for i in range(len(cluster_labels)):
+        cluster_dict.setdefault(labels[i], set()).add(indexes[i])
     return cluster_dict
+
+    
+def agnes(df, k, haus="mean"):
+    """
+    AGNES algorithm, bottom-up hierachical clustering
+    k: number of clusters
+    haus_dist: one of ["mean", "max", "min"]
+    
+    cluster_dict = {
+        label1: {idx1, idx3},
+        label2: {idx2, idx5},
+    }
+    """
+    cluster_dict = {}
+    # initiate cluster labels
+    labels = range(1, len(df)+1)
+    cluster_labels = pd.Series(labels, index=df.index)
+    # initiate distance matrix
+    dist_matrix = df.apply(lambda x: mk_dist(x, df, ax=1), axis=1)
+    dist_matrix.index = labels
+    dist_matrix.columns = labels
+    
+    m = len(df)
+    while m > k:
+        # mask diagonal element
+        dist_mat_mask = dist_matrix.mask(np.eye(len(dist_matrix), dtype=bool))
+        # find min value's (row, column)name in dist_mat_mask, 
+        # merge these 2 clusters into 1
+        c1_label, c2_label = dist_mat_mask.stack().idxmin()
+        # update cluster label
+        cluster_labels[cluster_labels.values==c2_label] = c1_label
+        cluster_dict = update_cluster_dict(cluster_labels)
+        # update dist_matrix
+        dist_matrix = dist_matrix.drop(index=c2_label, columns=c2_label)
+        # TODO !!! : try to vectorize
+        cols = dist_matrix.columns
+        for row_label in dist_matrix.index:
+            cols = cols.drop(row_label)
+            for col_label in cols:
+                row_cluster = df.loc[cluster_dict[row_label]]
+                col_cluster = df.loc[cluster_dict[col_label]]
+                distance = haus_dist(row_cluster, col_cluster, method=haus)
+                dist_matrix.loc[row_label, col_label] = distance
+                dist_matrix.loc[col_label, row_label] = distance
+        m -= 1
+    # rename label as 1 to k
+    for label, idx_set in cluster_dict.items():
+        cluster_labels.loc[idx_set] = k
+        k -= 1
+
+    return cluster_labels
 
 
 # watermelon 4.0 Data Set
@@ -175,10 +287,48 @@ watermelon4 = pd.DataFrame({
 watermelon4.index = watermelon4.index+1
 
 # k-means and plot
-df_kmeans = k_means(watermelon4.copy(), 3)
-sns.scatterplot(x="density", y="sugar_content", hue="cluster", data=df_kmeans)
+df_kmeans = watermelon4.copy()
+cluster_labels_kmeans = k_means(df_kmeans, 4)
+df_kmeans["cluster"] = cluster_labels_kmeans
+
+plt.figure(figsize=(10, 8))
+colors = {
+    0: "#DC143C", 1: "#4682B4", 2: "green", 3: "#FF8C00"
+}
+sns.scatterplot(x="density", y="sugar_content", hue="cluster", 
+                data=df_kmeans, palette=colors, sizes=20)
+plt.xlim([0, 0.9])
+plt.ylim([0, 0.8])
 plt.show()
 
-# DBSCAN
-cluster_dict = dbscan(watermelon4, epsilon=0.11, min_pts=5)
 
+# DBSCAN
+cluster_labels_dbscan = dbscan(watermelon4)
+df_dbscan = watermelon4.copy()
+df_dbscan["cluster"] = cluster_labels_dbscan
+
+plt.figure(figsize=(10, 8))
+colors = {
+    1: "#DC143C", 2: "#4682B4", 3: "#FF8C00", 4: "green", 0: "black"
+}
+sns.scatterplot(x="density", y="sugar_content", hue="cluster", 
+                data=df_dbscan, palette=colors, sizes=20)
+plt.xlim([0, 0.9])
+plt.ylim([0, 0.8])
+plt.show()
+
+
+# AGNES
+cluster_labels_hier = agnes(watermelon4, 4, haus="max")
+df_agnes = watermelon4.copy()
+df_agnes["cluster"] = cluster_labels_hier
+
+plt.figure(figsize=(10, 8))
+colors = {
+    4: "#DC143C", 3: "#4682B4", 2: "#FF8C00", 1: "green"
+}
+sns.scatterplot(x="density", y="sugar_content", hue="cluster", 
+                data=df_agnes, palette=colors, sizes=20)
+plt.xlim([0, 0.9])
+plt.ylim([0, 0.8])
+plt.show()
